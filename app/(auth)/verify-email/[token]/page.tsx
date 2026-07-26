@@ -4,23 +4,23 @@ import {
   verifyEmailAction,
 } from "@/app/services/auth.action";
 
-type VerifyEmailPageProps = {
-  searchParams: Promise<{
-    token?: string | string[];
+type VerifyEmailTokenPageProps = {
+  params: Promise<{
+    token: string;
   }>;
 };
 
-export default async function VerifyEmail({
-  searchParams,
-}: VerifyEmailPageProps) {
-  const { token } = await searchParams;
+export default async function VerifyEmailTokenPage({
+  params,
+}: VerifyEmailTokenPageProps) {
+  const { token } = await params;
 
   return (
     <main className="flex flex-1 items-center justify-center px-4 py-10">
       <VerifyEmailCard
-        key={typeof token === "string" ? token : "waiting"}
+        key={token}
         resendVerificationEmailAction={resendVerificationEmailAction}
-        token={typeof token === "string" ? token : undefined}
+        token={token}
         verifyEmailAction={verifyEmailAction}
       />
     </main>

@@ -1,19 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentUser, makeRefreshToken } from "./app/services/auth.action";
 
-export const proxy = async (request: NextRequest) => {
-  const user = await getCurrentUser();
-  if (!user) {
-    // xử lý refresh
-    const refreshStatus = await makeRefreshToken();
-    if (!refreshStatus) {
-      return NextResponse.redirect(new URL("/login", request.nextUrl.origin));
-    }
-  } else {
-    return NextResponse.next();
+export const proxy = (request: NextRequest) => {
+  const { pathname } = request.nextUrl;
+  const hasAccessToken = Boolean(request.cookies.get("accessToken")?.value);
+
+  if (pathname === "/" && !hasAccessToken) {
+    return NextResponse.redirect(new URL("/login", request.url));
   }
+
+  if (pathname === "/login" && hasAccessToken) {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  return NextResponse.next();
 };
 
 export const config = {
-  matcher: ["/"],
+  matcher: ["/", "/login"],
 };
