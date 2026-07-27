@@ -3,10 +3,12 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import {
+  changePasswordSchema,
   forgotPasswordSchema,
   loginSchema,
   registerSchema,
   resetPasswordSchema,
+  type ChangePasswordActionState,
   type ForgotPasswordActionState,
   type LoginActionState,
   type RegisterActionState,
@@ -17,6 +19,8 @@ type LoginApiResponse = {
   success: boolean;
   message?: string;
   data?: {
+    accessToken?: string;
+    refreshToken?: string;
     tokens?: {
       accessToken?: string;
       refreshToken?: string;
@@ -66,8 +70,10 @@ export const loginAction = async (
   const data = (await response.json().catch(() => null)) as
     | LoginApiResponse
     | null;
-  const accessToken = data?.data?.tokens?.accessToken;
-  const refreshToken = data?.data?.tokens?.refreshToken;
+  const accessToken =
+    data?.data?.accessToken ?? data?.data?.tokens?.accessToken;
+  const refreshToken =
+    data?.data?.refreshToken ?? data?.data?.tokens?.refreshToken;
 
   if (!response.ok || !data?.success || !accessToken || !refreshToken) {
     return {
@@ -87,7 +93,7 @@ export const loginAction = async (
   });
   cookiesStore.set(`refreshToken`, refreshToken, {
     httpOnly: true,
-    maxAge: 3600,
+    maxAge: 60 * 60 * 24 * 30,
     path: "/",
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
@@ -401,40 +407,72 @@ export const verifyEmailAction = async (
   };
 };
 
-export const getCurrentUser = async () => {
+export type CurrentUser = {
+  _id: string;
+  bio?: string | null;
+  createdAt?: string;
+  email: string;
+  fullName?: string | null;
+  gender?: "female" | "male" | "other" | null;
+  isVerified?: boolean;
+  profilePicture?: string | null;
+  username: string;
+  website?: string | null;
+};
+
+export const getCurrentUser = async (): Promise<
+  CurrentUser | null | undefined
+> => {
   const cookiesStore = await cookies();
   const accessToken = cookiesStore.get("accessToken")?.value;
   if (!accessToken) {
     return;
   }
-  const response = await fetch(
-    `${process.env.NEXT_PUBLIC_SERVER_API}/api/users/profile`,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
+
+  try {
+    const response = await fetch(
+      `${process.env.SERVER_API ?? process.env.NEXT_PUBLIC_SERVER_API}/api/users/profile`,
+      {
+        cache: "no-store",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
       },
-    },
-  );
-  const data = await response.json();
-  return data.data;
+    );
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok || data?.success === false) {
+      return;
+    }
+
+    return (data?.data ?? null) as CurrentUser | null;
+  } catch {
+    return;
+  }
 };
 
 export const logout = async () => {
   const cookieStore = await cookies();
   const accessToken = cookieStore.get("accessToken")?.value;
-  if (!accessToken) {
-    return;
+  const refreshToken = cookieStore.get("refreshToken")?.value;
+
+  if (accessToken) {
+    await fetch(
+      `${process.env.SERVER_API ?? process.env.NEXT_PUBLIC_SERVER_API}/api/auth/logout`,
+      {
+        body: JSON.stringify({ refreshToken }),
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      },
+    ).catch(() => null);
   }
-  // Call backend to add token to blacklist
-  fetch(`${process.env.SERVER_API}/auth/logout`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
+
   cookieStore.delete(`accessToken`);
   cookieStore.delete(`refreshToken`);
-  return redirect("/login");
+  redirect("/login");
 };
 
 export const getAccessToken = async () => {
@@ -449,25 +487,29 @@ export const makeRefreshToken = async () => {
   if (!refreshToken) {
     return false;
   }
+
   const response = await fetch(
-    `${process.env.NEXT_PUBLIC_SERVER_API}/api/auth/refresh-token`,
+    `${process.env.SERVER_API ?? process.env.NEXT_PUBLIC_SERVER_API}/api/auth/refresh-token`,
     {
-      method: "POST",
+      body: JSON.stringify({ refreshToken }),
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ refreshToken }),
+      method: "POST",
     },
-  );
+  ).catch(() => null);
 
-  if (!response.ok) {
+  if (!response?.ok) {
     return false;
   }
 
-  const {
-    data: { accessToken: newAccessToken, refreshToken: newRefreshToken },
-  } = await response.json();
-  console.log(newAccessToken, "không lấy đưcọ token");
+  const payload = await response.json().catch(() => null);
+  const newAccessToken = payload?.data?.accessToken;
+  const newRefreshToken = payload?.data?.refreshToken;
+
+  if (!newAccessToken || !newRefreshToken) {
+    return false;
+  }
 
   cookiesStore.set(`accessToken`, newAccessToken, {
     httpOnly: true,
@@ -478,12 +520,71 @@ export const makeRefreshToken = async () => {
   });
   cookiesStore.set(`refreshToken`, newRefreshToken, {
     httpOnly: true,
-    maxAge: 3600,
+    maxAge: 60 * 60 * 24 * 30,
     path: "/",
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
   });
   return {
     newAccessToken,
+  };
+};
+
+export const changePasswordAction = async (
+  _previousState: ChangePasswordActionState,
+  formData: FormData,
+): Promise<ChangePasswordActionState> => {
+  const validatedFields = changePasswordSchema.safeParse({
+    confirmPassword: formData.get("confirmPassword"),
+    currentPassword: formData.get("currentPassword"),
+    newPassword: formData.get("newPassword"),
+  });
+
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: "Vui lòng kiểm tra lại thông tin mật khẩu.",
+      success: false,
+    };
+  }
+
+  const accessToken = (await cookies()).get("accessToken")?.value;
+  if (!accessToken) {
+    return {
+      message: "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",
+      success: false,
+    };
+  }
+
+  const response = await fetch(
+    `${process.env.SERVER_API ?? process.env.NEXT_PUBLIC_SERVER_API}/api/auth/change-password`,
+    {
+      body: JSON.stringify(validatedFields.data),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    },
+  ).catch(() => null);
+
+  if (!response) {
+    return {
+      message: "Không thể kết nối tới máy chủ. Vui lòng thử lại sau.",
+      success: false,
+    };
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.success === false) {
+    return {
+      message: payload?.message ?? "Không thể thay đổi mật khẩu.",
+      success: false,
+    };
+  }
+
+  return {
+    message: payload?.message ?? "Đổi mật khẩu thành công.",
+    success: true,
   };
 };
